@@ -1,5 +1,8 @@
 # Job Application Agent
 
+I wanted to understand how AI agents actually work, so I built one.
+It's a job application agent in Python: give it a job posting and your CV, and it fetches the posting, compares it with your experience, scores the match, and logs it to a tracker.
+
 A small command-line AI agent that reads a job posting and your CV, judges how well they match, and logs the result to `applications.json`. In chat mode it can also look back over past evaluations and write cover letters.
 
 ## Tools
