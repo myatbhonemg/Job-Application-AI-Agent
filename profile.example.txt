@@ -1,0 +1,10 @@
+# Copy this file to profile.txt and write your own rules:
+#   cp profile.example.txt profile.txt
+# profile.txt is git-ignored, so your personal details stay on your machine.
+# Plain sentences work best. Claude reads this and checks each rule against the posting.
+# Everything below is a made-up example: replace each <placeholder> with your own details.
+
+- Example: I am on a <visa type> that lets me work without sponsorship until <date>.
+- Example: After <date> I will need the employer to sponsor a work visa.
+- Example: A fixed-term programme or contract that ends before <date> is fine.
+- Example: Anything longer, or a permanent role, only works if the employer offers sponsorship.

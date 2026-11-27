@@ -8,7 +8,7 @@ A small command-line AI agent that reads a job posting and your CV, judges how w
 |---|---|---|
 | `fetch_job_posting(url)` | Downloads a job page and returns its text | no |
 | `read_cv(path)` | Reads your CV (`.pdf`, `.txt`, `.md`) | no |
-| `save_application(company, role, match_score, notes)` | Appends an evaluation to `applications.json` | **yes** |
+| `save_application(company, role, match_score, notes, visa_fit, visa_reason, programme_length_quote, sponsorship_quote)` | Appends an evaluation, including a visa check, to `applications.json` | **yes** |
 | `list_applications()` | Returns every saved evaluation, so Claude can answer "which jobs scored above 70?" | no |
 | `draft_cover_letter(company, role, letter)` | Saves a cover letter **Claude wrote** to `cover_letters/<company>_<role>.md` (never overwrites; extra drafts get `_2`, `_3`) | **yes** |
 
@@ -30,15 +30,47 @@ cp .env.example .env        # then open .env and paste your real API key
 
 ```bash
 python agent.py https://example.com/jobs/backend-engineer --cv sample_cv.txt
+
+# or, if the page can't be fetched, paste the description into a file:
+python agent.py --job-file job.txt --cv sample_cv.txt
 ```
 
 | Option | Meaning |
 |---|---|
 | `job_url` | The job posting page |
+| `--job-file` | A `.txt` file with the job description, used **instead of** `job_url` |
+| `--profile` | A `.txt` file with your eligibility rules (visa status etc.), checked against the posting |
 | `--cv` | Your CV as `.pdf`, `.txt` or `.md` |
 | `--max-turns` | Safety limit on loop iterations (default 10, applied to each question in chat mode) |
 | `--chat` | After the evaluation, stay open for follow-up questions |
 | `--yes` | Skip the approval prompt and save automatically |
+
+### Visa check with a candidate profile
+
+```bash
+cp profile.example.txt profile.txt    # then write your own rules; profile.txt is git-ignored
+python agent.py --job-file job.txt --cv cv.pdf --profile profile.txt
+```
+
+Your profile is put into the first message inside `<candidate_profile>` tags. Every saved application then gets:
+
+| Field | Meaning |
+|---|---|
+| `visa_fit` | `"ok"`, `"needs sponsorship"` or `"unclear"` |
+| `visa_reason` | one line explaining why |
+| `programme_length_quote` | the posting's **exact words** about programme/contract length, or `""` |
+| `sponsorship_quote` | the posting's **exact words** about sponsorship / right to work, or `""` |
+
+**No guessing.** The prompt asks for this, and `save_application` also **enforces it in code**:
+
+1. Each quote must actually appear in the posting Claude was shown (case, curly quotes and whitespace are ignored, and `...` may skip words). A made-up or paraphrased quote is rejected.
+2. If `sponsorship_quote` is empty (the posting says nothing about sponsorship), `visa_fit` **must** be `"unclear"`.
+
+If Claude breaks a rule, the tool returns an error like *"sponsorship_quote is not an exact quote from the job posting"*, and Claude has to fix the record and try again. This is a useful pattern: **a prompt makes a rule likely, and a check in code makes it certain.** The tools in `tools.py` remember every posting Claude has seen (`remember_posting`) so the quotes can be checked.
+
+Without `--profile`, Claude is told no profile was given and should answer `"unclear"`.
+
+> This is a screening aid, not immigration advice. Always confirm visa questions with the employer.
 
 ### Approving saves (human in the loop)
 
@@ -189,11 +221,12 @@ requirements.txt  dependencies
 sample_cv.txt     a fake CV to test with
 applications.json created on first save (git-ignored)
 cover_letters/    saved cover letters (git-ignored)
+profile.example.txt  template for your eligibility rules (copy to profile.txt, git-ignored)
 ```
 
 ## Limitations
 
-- Pages that render their content with JavaScript (some LinkedIn and Workday pages) return little or no text. Paste the posting into a `.txt` file instead, or add a tool that reads local files.
+- Pages that render their content with JavaScript (some LinkedIn and Workday pages) return little or no text. Paste the posting into a `.txt` file and use `--job-file job.txt` instead.
 - Scanned (image-only) PDF CVs have no text to extract. Use a text-based PDF or a `.txt` copy.
 
 ## Ideas for v2

@@ -20,6 +20,33 @@ from pypdf import PdfReader
 APPLICATIONS_FILE = Path(__file__).parent / "applications.json"
 COVER_LETTERS_DIR = Path(__file__).parent / "cover_letters"
 MAX_POSTING_CHARS = 15_000  # keep the page text small enough to be cheap to send
+VISA_FIT_VALUES = ["ok", "needs sponsorship", "unclear"]
+
+# Every job posting text Claude has been shown in this run (fetched pages and
+# --job-file text). save_application checks its quotes against these, so
+# Claude can't put words in the posting's mouth.
+_seen_postings: list[str] = []
+
+
+def _normalize(text: str) -> str:
+    """Lowercase, unify curly quotes, collapse whitespace: for fair quote matching."""
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    return " ".join(text.lower().split())
+
+
+def remember_posting(text: str) -> None:
+    """Record a posting text so quotes can be checked against it."""
+    _seen_postings.append(_normalize(text))
+
+
+def _is_real_quote(quote: str) -> bool:
+    """True if every part of the quote (split at '...') appears in a seen posting."""
+    if not _seen_postings:
+        return True  # nothing to check against (e.g. tool called directly)
+    parts = [_normalize(part).strip(" \"'") for part in re.split(r"\.\.\.|\u2026", quote)]
+    parts = [part for part in parts if part]
+    return any(all(part in posting for part in parts) for posting in _seen_postings)
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +75,7 @@ def fetch_job_posting(url: str) -> str:
         raise ValueError("The page had no readable text (it may need JavaScript to render).")
     if len(text) > MAX_POSTING_CHARS:
         text = text[:MAX_POSTING_CHARS] + f"\n\n[...truncated, page was {len(text)} characters]"
+    remember_posting(text)
     return text
 
 
@@ -71,10 +99,38 @@ def read_cv(path: str) -> str:
     return text
 
 
-def save_application(company: str, role: str, match_score: int, notes: str) -> str:
-    """Append one application record to applications.json."""
+def save_application(company: str, role: str, match_score: int, notes: str,
+                     visa_fit: str, visa_reason: str,
+                     programme_length_quote: str, sponsorship_quote: str) -> str:
+    """Append one application record to applications.json.
+
+    The visa checks below are enforced in code, not just asked for in the
+    prompt: if Claude breaks a rule, it gets an error back and must fix it.
+    """
     if not 0 <= match_score <= 100:
         raise ValueError(f"match_score must be between 0 and 100, got {match_score}")
+    if visa_fit not in VISA_FIT_VALUES:
+        raise ValueError(f"visa_fit must be one of {VISA_FIT_VALUES}, got {visa_fit!r}")
+
+    visa_reason = " ".join(visa_reason.split())  # force a single line
+    if not visa_reason:
+        raise ValueError("visa_reason must be a one-line reason, not empty.")
+
+    # Rule 1: quotes must really come from the posting.
+    for field, quote in (("programme_length_quote", programme_length_quote),
+                         ("sponsorship_quote", sponsorship_quote)):
+        if quote.strip() and not _is_real_quote(quote):
+            raise ValueError(
+                f"{field} is not an exact quote from the job posting: {quote!r}. "
+                'Copy the posting\'s words exactly, or use "" if it says nothing about this.'
+            )
+
+    # Rule 2: no sponsorship statement in the posting -> no guessing.
+    if not sponsorship_quote.strip() and visa_fit != "unclear":
+        raise ValueError(
+            "The posting says nothing about visa sponsorship (sponsorship_quote is empty), "
+            f'so visa_fit must be "unclear", not {visa_fit!r}.'
+        )
 
     records = []
     if APPLICATIONS_FILE.exists():
@@ -85,10 +141,15 @@ def save_application(company: str, role: str, match_score: int, notes: str) -> s
         "role": role,
         "match_score": match_score,
         "notes": notes,
+        "visa_fit": visa_fit,
+        "visa_reason": visa_reason,
+        "programme_length_quote": programme_length_quote.strip(),
+        "sponsorship_quote": sponsorship_quote.strip(),
         "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
     APPLICATIONS_FILE.write_text(json.dumps(records, indent=2), encoding="utf-8")
-    return f"Saved application #{len(records)}: {role} at {company} (score {match_score})."
+    return (f"Saved application #{len(records)}: {role} at {company} "
+            f"(score {match_score}, visa_fit: {visa_fit}).")
 
 
 def list_applications() -> str:
@@ -167,7 +228,8 @@ TOOLS = [
     {
         "name": "save_application",
         "description": (
-            "Record the evaluation of one job in the applications log. "
+            "Record the evaluation of one job in the applications log, including a visa "
+            "eligibility check backed by exact quotes from the posting. "
             "Call this exactly once, after you have read both the posting and the CV."
         ),
         "strict": True,
@@ -184,8 +246,38 @@ TOOLS = [
                     "type": "string",
                     "description": "Strengths, gaps, and concrete tips for tailoring the CV.",
                 },
+                "visa_fit": {
+                    "type": "string",
+                    "enum": VISA_FIT_VALUES,
+                    "description": (
+                        "Whether the candidate's eligibility rules (from their profile) fit this job. "
+                        '"ok": the posting clearly works for them. "needs sponsorship": the posting '
+                        'shows they would need sponsorship. "unclear": the posting does not say '
+                        "enough (always use this if it says nothing about sponsorship, or if no "
+                        "profile was given)."
+                    ),
+                },
+                "visa_reason": {
+                    "type": "string",
+                    "description": "One line explaining visa_fit, based on the quotes and the profile.",
+                },
+                "programme_length_quote": {
+                    "type": "string",
+                    "description": (
+                        "The posting's exact words about programme or contract length, copied "
+                        'verbatim. Use "" if the posting says nothing about it. Never paraphrase.'
+                    ),
+                },
+                "sponsorship_quote": {
+                    "type": "string",
+                    "description": (
+                        "The posting's exact words about visa sponsorship or right to work, copied "
+                        'verbatim. Use "" if the posting says nothing about it. Never paraphrase.'
+                    ),
+                },
             },
-            "required": ["company", "role", "match_score", "notes"],
+            "required": ["company", "role", "match_score", "notes", "visa_fit", "visa_reason",
+                         "programme_length_quote", "sponsorship_quote"],
             "additionalProperties": False,
         },
     },
