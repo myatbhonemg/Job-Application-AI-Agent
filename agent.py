@@ -2,7 +2,10 @@
 Job application agent: a hand-written tool-use loop on the Anthropic SDK.
 
 Usage:
-    python agent.py <job_url> --cv path/to/cv.pdf [--max-turns 10]
+    python agent.py <job_url> --cv path/to/cv.pdf [--max-turns 10] [--chat]
+
+With --chat, you can ask follow-up questions after the evaluation. The
+conversation history is kept, so Claude remembers the posting and your CV.
 """
 
 import argparse
@@ -23,9 +26,13 @@ For the job posting and CV you are given:
 1. Fetch the job posting and read the CV with your tools.
 2. Compare the role's requirements against the candidate's actual experience. Be honest:
    do not inflate the score.
-3. Call save_application exactly once with the company, role, a 0-100 match score, and notes
-   covering strengths, gaps, and concrete ways to tailor the CV for this role.
+3. Call save_application exactly once per job with the company, role, a 0-100 match score, and
+   notes covering strengths, gaps, and concrete ways to tailor the CV for this role.
 4. Finish with a short summary for the candidate.
+
+The candidate may then ask follow-up questions (e.g. rewrite a CV section, draft a cover letter,
+prepare for interviews). Answer them using what you already know; only call tools again if you
+need new information or are asked to evaluate a different job.
 
 If a tool fails, say what went wrong and continue with what you have if that makes sense."""
 
@@ -36,11 +43,27 @@ def preview(text: str, limit: int = 200) -> str:
     return flat if len(flat) <= limit else flat[:limit] + "..."
 
 
-def run_agent(client: anthropic.Anthropic, user_request: str, max_turns: int) -> None:
-    # The conversation so far. The API is stateless: this list IS the agent's
-    # memory, and we send all of it on every turn.
-    messages = [{"role": "user", "content": user_request}]
+def add_user_text(messages: list, text: str) -> None:
+    """Add the user's typed text to the conversation.
 
+    Normally that's a new user message. But if the loop stopped right after
+    sending tool results (e.g. it hit --max-turns), the last message is
+    already a user message, so we add the text to it instead of sending two
+    user messages in a row.
+    """
+    if messages and messages[-1]["role"] == "user":
+        messages[-1]["content"].append({"type": "text", "text": text})
+    else:
+        messages.append({"role": "user", "content": [{"type": "text", "text": text}]})
+
+
+def run_agent(client: anthropic.Anthropic, messages: list, max_turns: int) -> None:
+    """Run the tool-use loop until Claude stops calling tools.
+
+    `messages` is the conversation so far. The API is stateless: this list IS
+    the agent's memory, and we send all of it on every turn. We modify it in
+    place, so the caller keeps the full history for follow-up questions.
+    """
     for turn in range(1, max_turns + 1):
         print(f"\n── turn {turn} " + "─" * 50)
 
@@ -100,11 +123,56 @@ def run_agent(client: anthropic.Anthropic, user_request: str, max_turns: int) ->
     print(f"\n⚠️  Stopped after {max_turns} turns (safety limit).")
 
 
+def run_agent_safely(client: anthropic.Anthropic, messages: list, max_turns: int) -> bool:
+    """Run the loop, turning API errors into messages. Returns False on failure."""
+    try:
+        run_agent(client, messages, max_turns)
+        return True
+    except anthropic.AuthenticationError:
+        print("\n❌ Authentication failed: check the API key in your .env file.")
+    except anthropic.RateLimitError:
+        print("\n❌ Rate limited by the API. Wait a moment and try again.")
+    except anthropic.APIStatusError as exc:
+        print(f"\n❌ API error {exc.status_code}: {exc.message}")
+    except anthropic.APIConnectionError:
+        print("\n❌ Could not reach the Anthropic API. Check your internet connection.")
+    return False
+
+
+def chat(client: anthropic.Anthropic, messages: list, max_turns: int) -> None:
+    """Follow-up questions: read a line, add it to the SAME history, run the loop again."""
+    print("\n💬 Chat mode: ask follow-up questions. Type 'exit' or press Ctrl-D to quit.")
+    while True:
+        try:
+            question = input("\nyou> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not question:
+            continue
+        if question.lower() in ("exit", "quit"):
+            return
+
+        add_user_text(messages, question)
+        before = len(messages)
+        if not run_agent_safely(client, messages, max_turns):
+            # The request failed, so Claude never saw the question. Take it
+            # back out of the history so you can just type it again.
+            del messages[before:]
+            last = messages[-1]["content"]
+            last.pop()
+            if not last:
+                messages.pop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a job posting against your CV.")
     parser.add_argument("job_url", help="URL of the job posting")
     parser.add_argument("--cv", required=True, help="Path to your CV (.pdf, .txt or .md)")
-    parser.add_argument("--max-turns", type=int, default=10, help="Safety limit on loop turns")
+    parser.add_argument("--max-turns", type=int, default=10,
+                        help="Safety limit on loop turns (per question in chat mode)")
+    parser.add_argument("--chat", action="store_true",
+                        help="Keep chatting after the evaluation to ask follow-up questions")
     args = parser.parse_args()
 
     load_dotenv()  # copies values from .env into os.environ
@@ -119,16 +187,13 @@ def main() -> None:
         f"My CV is at: {args.cv}"
     )
 
-    try:
-        run_agent(client, request, args.max_turns)
-    except anthropic.AuthenticationError:
-        sys.exit("Authentication failed: check the API key in your .env file.")
-    except anthropic.RateLimitError:
-        sys.exit("Rate limited by the API. Wait a moment and try again.")
-    except anthropic.APIStatusError as exc:
-        sys.exit(f"API error {exc.status_code}: {exc.message}")
-    except anthropic.APIConnectionError:
-        sys.exit("Could not reach the Anthropic API. Check your internet connection.")
+    messages: list = []
+    add_user_text(messages, request)
+
+    if not run_agent_safely(client, messages, args.max_turns):
+        sys.exit(1)
+    if args.chat:
+        chat(client, messages, args.max_turns)
 
 
 if __name__ == "__main__":

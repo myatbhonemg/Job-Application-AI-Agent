@@ -24,7 +24,29 @@ python agent.py https://example.com/jobs/backend-engineer --cv sample_cv.txt
 |---|---|
 | `job_url` | The job posting page |
 | `--cv` | Your CV as `.pdf`, `.txt` or `.md` |
-| `--max-turns` | Safety limit on loop iterations (default 10) |
+| `--max-turns` | Safety limit on loop iterations (default 10, applied to each question in chat mode) |
+| `--chat` | After the evaluation, stay open for follow-up questions |
+
+### Chat mode
+
+```bash
+python agent.py https://example.com/jobs/backend-engineer --cv sample_cv.txt --chat
+```
+
+After the evaluation you get a `you>` prompt. Ask things like *"rewrite my summary for this role"*, *"draft a short cover letter"* or *"what interview questions should I prepare for?"*. Type `exit` or press Ctrl-D to quit.
+
+Chat mode is a second loop **around** the agent loop:
+
+```python
+while True:
+    question = input("you> ")
+    add_user_text(messages, question)   # same messages list as before
+    run_agent(client, messages, ...)     # the exact same tool-use loop
+```
+
+Nothing new is needed for Claude to "remember" the job posting and your CV: they're already in `messages` as earlier tool results, and the whole list is resent every turn. Claude can still call tools during chat, for example if you paste a second job URL.
+
+Each question makes the history longer, so watch the `tokens: ... in` number grow.
 
 Example output:
 
@@ -132,7 +154,6 @@ applications.json created on first save (git-ignored)
 
 ## Ideas for v2
 
-- **Interactive chat:** keep `messages` after the loop ends and read another `input()`, so you can ask follow-ups ("rewrite my summary for this role").
 - **Human approval:** ask `y/n` before running `save_application`. If you decline, return "user declined" as the tool result.
 - **New tools:** `list_applications`, `draft_cover_letter(company, role)` writing to a file, `compare_jobs`.
 - **Streaming:** use `client.messages.stream(...)` to print Claude's text as it's generated.
