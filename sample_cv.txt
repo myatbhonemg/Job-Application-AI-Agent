@@ -1,0 +1,27 @@
+Alex Tan
+Final-year BSc Software Engineering student
+alex.tan@example.com | github.com/example
+
+SUMMARY
+Final-year software engineering student with internship experience building
+REST APIs in Python and a strong interest in backend and cloud systems.
+
+EDUCATION
+BSc (Hons) Software Engineering, Example University, expected 2027
+Relevant modules: Data Structures & Algorithms, Databases, Distributed Systems,
+Software Testing, Cloud Computing
+
+EXPERIENCE
+Software Engineering Intern, Example Fintech (Jun 2026 - Sep 2026)
+- Built and tested REST endpoints with Python (FastAPI) and PostgreSQL
+- Wrote pytest suites, raising coverage of a payments service from 55% to 80%
+- Containerised two services with Docker and set up GitHub Actions CI
+
+PROJECTS
+Job Application Agent: Python CLI that uses the Claude API with tool use
+Campus Events App: React + Node.js/Express + MongoDB, 300 monthly users
+
+SKILLS
+Languages: Python, JavaScript/TypeScript, Java, SQL
+Tools: Git, Docker, GitHub Actions, PostgreSQL, MongoDB, Linux
+Familiar with: AWS (EC2, S3), REST API design, unit testing

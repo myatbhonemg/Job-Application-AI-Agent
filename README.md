@@ -1,0 +1,141 @@
+# Job Application Agent
+
+A small command-line AI agent that reads a job posting and your CV, judges how well they match, and logs the result to `applications.json`.
+
+It uses the [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python) directly. The **agent loop is written by hand** (no agent framework, no SDK Tool Runner), so you can see exactly how an agent works.
+
+## Setup
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # skip if .venv already exists
+pip install -r requirements.txt
+cp .env.example .env        # then open .env and paste your real API key
+```
+
+`.env` is listed in `.gitignore`, so your key never gets committed. Check with `git status`: `.env` should not appear.
+
+## Usage
+
+```bash
+python agent.py https://example.com/jobs/backend-engineer --cv sample_cv.txt
+```
+
+| Option | Meaning |
+|---|---|
+| `job_url` | The job posting page |
+| `--cv` | Your CV as `.pdf`, `.txt` or `.md` |
+| `--max-turns` | Safety limit on loop iterations (default 10) |
+
+Example output:
+
+```
+── turn 1 ──────────────────────────────────────────────────
+   (tokens: 1210 in / 140 out, stop_reason=tool_use)
+
+🤖 I'll start by fetching the job posting and reading your CV.
+
+🔧 fetch_job_posting({"url": "https://example.com/jobs/backend-engineer"})
+   ↳ Backend Engineer – Acme Ltd. We're looking for a graduate engineer with Python...
+
+🔧 read_cv({"path": "sample_cv.txt"})
+   ↳ Alex Tan Final-year BSc Software Engineering student ...
+
+── turn 2 ──────────────────────────────────────────────────
+   (tokens: 4630 in / 410 out, stop_reason=tool_use)
+
+🔧 save_application({"company": "Acme Ltd", "role": "Backend Engineer", "match_score": 72, "notes": "..."})
+   ↳ Saved application #1: Backend Engineer at Acme Ltd (score 72).
+
+── turn 3 ──────────────────────────────────────────────────
+   (tokens: 5110 in / 180 out, stop_reason=end_turn)
+
+🤖 You're a solid match (72/100). Strengths: ... Gaps: ...
+
+✅ Agent finished.
+```
+
+Notice that Claude asked for **two tools in one turn** (parallel tool use) and the loop ran both before calling the API again.
+
+## How the agent loop works
+
+An "agent" is just this: **a language model, some tools, and a loop that lets the model use those tools until it decides it's done.**
+
+```
+ you ──► agent.py ──► first user message: "evaluate this job for this CV"
+                │
+                ▼
+        ┌──── AGENT LOOP (run_agent in agent.py) ─────────────────────┐
+        │ 1. client.messages.create(model, system, tools, messages)   │
+        │ 2. append Claude's reply (role=assistant) to messages       │
+        │ 3. look at response.stop_reason                             │
+        │      "tool_use" → run each requested tool in tools.py,      │
+        │                   send ALL results back in ONE user         │
+        │                   message, go to 1                          │
+        │      "end_turn" → Claude is done, print answer, exit        │
+        │      other      → stop and say why                          │
+        └─────────────────────────────────────────────────────────────┘
+```
+
+### Step by step
+
+**0. Describe the tools.** In `tools.py`, `TOOLS` is a list of JSON schemas. Each one has a `name`, a `description` saying *when* to use it, and an `input_schema` describing its arguments. This is everything Claude knows about a tool. Claude never sees your Python code.
+
+**1. Call the model.** `client.messages.create(...)` sends the system prompt, the tool schemas and the **entire conversation so far**. The API is *stateless*: it remembers nothing between calls, so the `messages` list is the agent's whole memory.
+
+**2. Claude replies with content blocks.** `response.content` is a list. Each block is one of:
+- `text`: Claude talking ("I'll fetch the posting first...")
+- `tool_use`: a *request* to run a tool, with an `id`, a `name` and an `input` dict
+- `thinking`: Claude's internal reasoning (this model thinks by default)
+
+We append the whole `response.content` to `messages` **unchanged**. If you dropped the `tool_use` or `thinking` blocks, the next request would fail or lose context.
+
+**3. Check `stop_reason`.** This tells you *why* Claude stopped generating:
+
+| `stop_reason` | Meaning | What the loop does |
+|---|---|---|
+| `tool_use` | "I want you to run these tools" | run them, continue |
+| `end_turn` | "I'm finished" | print the answer, exit |
+| `max_tokens` | ran out of output space | stop |
+| `refusal` | declined the request | stop |
+
+**4. Run the tools.** For every `tool_use` block, `run_tool(name, input)` calls the matching Python function. **Claude doesn't execute anything. Your code does.** This is the key idea: the model decides, the program acts.
+
+**5. Return the results.** Each result goes into a `tool_result` block whose `tool_use_id` matches the request's `id`, so Claude knows which answer belongs to which call. All results from one turn go back together in **one** `user` message. Then loop to step 1.
+
+### Errors are just information
+
+If a tool fails (bad URL, missing file), `run_tool` catches the exception and returns its message with `is_error: True`. Claude reads the error like any other result and can retry, try something else, or explain the problem to you. The program doesn't crash.
+
+### Safety limit
+
+`--max-turns` caps how many times the loop can call the API. Without a cap, a confused model could keep calling tools forever and run up a bill.
+
+### Cost
+
+Every turn resends the whole conversation, so input tokens grow each turn (see the `tokens:` line). That's why `fetch_job_posting` trims page text to 15,000 characters.
+
+## Project layout
+
+```
+agent.py          CLI + system prompt + the hand-written agent loop
+tools.py          tool schemas (what Claude sees) + implementations (what runs)
+requirements.txt  dependencies
+.env.example      template for your API key (.env itself is git-ignored)
+sample_cv.txt     a fake CV to test with
+applications.json created on first save (git-ignored)
+```
+
+## Limitations
+
+- Pages that render their content with JavaScript (some LinkedIn and Workday pages) return little or no text. Paste the posting into a `.txt` file instead, or add a tool that reads local files.
+- Scanned (image-only) PDF CVs have no text to extract. Use a text-based PDF or a `.txt` copy.
+
+## Ideas for v2
+
+- **Interactive chat:** keep `messages` after the loop ends and read another `input()`, so you can ask follow-ups ("rewrite my summary for this role").
+- **Human approval:** ask `y/n` before running `save_application`. If you decline, return "user declined" as the tool result.
+- **New tools:** `list_applications`, `draft_cover_letter(company, role)` writing to a file, `compare_jobs`.
+- **Streaming:** use `client.messages.stream(...)` to print Claude's text as it's generated.
+- **Prompt caching:** add `cache_control` so the repeated system prompt, tools and history are billed at the cheaper cached rate.
+- **Refusal fallback:** the API has a beta `fallbacks` parameter that retries a refused request on another model automatically.
+- **Compare with the SDK's Tool Runner** (`client.beta.messages.tool_runner`). It runs this same loop for you. Now that you've written the loop yourself, you'll know what it does.
