@@ -2,7 +2,7 @@
 Job application agent: a hand-written tool-use loop on the Anthropic SDK.
 
 Usage:
-    python agent.py <job_url> --cv path/to/cv.pdf [--max-turns 10] [--chat]
+    python agent.py <job_url> --cv path/to/cv.pdf [--max-turns 10] [--chat] [--yes]
 
 With --chat, you can ask follow-up questions after the evaluation. The
 conversation history is kept, so Claude remembers the posting and your CV.
@@ -34,13 +34,38 @@ The candidate may then ask follow-up questions (e.g. rewrite a CV section, draft
 prepare for interviews). Answer them using what you already know; only call tools again if you
 need new information or are asked to evaluate a different job.
 
+save_application needs the candidate's approval. If they decline with feedback, revise the
+record accordingly and call save_application again. If they decline without feedback, do not
+retry; just carry on.
+
 If a tool fails, say what went wrong and continue with what you have if that makes sense."""
+
+# Tools that change something (here: write to applications.json) need a human
+# to say yes first. Read-only tools run straight away.
+NEEDS_APPROVAL = {"save_application"}
 
 
 def preview(text: str, limit: int = 200) -> str:
     """One-line preview of a tool result for the terminal."""
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[:limit] + "..."
+
+
+def ask_approval(name: str, tool_input: dict) -> tuple[bool, str]:
+    """Show what Claude wants to do and ask the human. Returns (approved, feedback)."""
+    print(f"\n✋ Claude wants to run {name}:")
+    for key, value in tool_input.items():
+        print(f"   {key}: {value}")
+    try:
+        answer = input("   Approve? [y = yes / n = no / or type feedback for Claude] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = "n"
+    if answer.lower() in ("y", "yes"):
+        return True, ""
+    if answer.lower() in ("", "n", "no"):
+        return False, ""
+    return False, answer  # anything else is feedback, e.g. "score is too high"
 
 
 def add_user_text(messages: list, text: str) -> None:
@@ -57,7 +82,8 @@ def add_user_text(messages: list, text: str) -> None:
         messages.append({"role": "user", "content": [{"type": "text", "text": text}]})
 
 
-def run_agent(client: anthropic.Anthropic, messages: list, max_turns: int) -> None:
+def run_agent(client: anthropic.Anthropic, messages: list, max_turns: int,
+              auto_approve: bool = False) -> None:
     """Run the tool-use loop until Claude stops calling tools.
 
     `messages` is the conversation so far. The API is stateless: this list IS
@@ -108,7 +134,21 @@ def run_agent(client: anthropic.Anthropic, messages: list, max_turns: int) -> No
             if block.type != "tool_use":
                 continue
             print(f"\n🔧 {block.name}({json.dumps(block.input, ensure_ascii=False)})")
-            result, is_error = run_tool(block.name, block.input)
+
+            # Human in the loop: Claude only *asked* for this tool, so we can
+            # still say no. A "no" is sent back as the tool result, which
+            # Claude reads like any other result and can react to.
+            approved, feedback = True, ""
+            if block.name in NEEDS_APPROVAL and not auto_approve:
+                approved, feedback = ask_approval(block.name, block.input)
+
+            if approved:
+                result, is_error = run_tool(block.name, block.input)
+            else:
+                result = "The user declined this action. Nothing was saved."
+                if feedback:
+                    result += f" Their feedback: {feedback}"
+                is_error = False  # a decision, not a failure
             print(f"   {'❌' if is_error else '↳'} {preview(result)}")
             tool_results.append({
                 "type": "tool_result",
@@ -123,10 +163,11 @@ def run_agent(client: anthropic.Anthropic, messages: list, max_turns: int) -> No
     print(f"\n⚠️  Stopped after {max_turns} turns (safety limit).")
 
 
-def run_agent_safely(client: anthropic.Anthropic, messages: list, max_turns: int) -> bool:
+def run_agent_safely(client: anthropic.Anthropic, messages: list, max_turns: int,
+                     auto_approve: bool = False) -> bool:
     """Run the loop, turning API errors into messages. Returns False on failure."""
     try:
-        run_agent(client, messages, max_turns)
+        run_agent(client, messages, max_turns, auto_approve)
         return True
     except anthropic.AuthenticationError:
         print("\n❌ Authentication failed: check the API key in your .env file.")
@@ -139,7 +180,8 @@ def run_agent_safely(client: anthropic.Anthropic, messages: list, max_turns: int
     return False
 
 
-def chat(client: anthropic.Anthropic, messages: list, max_turns: int) -> None:
+def chat(client: anthropic.Anthropic, messages: list, max_turns: int,
+         auto_approve: bool = False) -> None:
     """Follow-up questions: read a line, add it to the SAME history, run the loop again."""
     print("\n💬 Chat mode: ask follow-up questions. Type 'exit' or press Ctrl-D to quit.")
     while True:
@@ -155,7 +197,7 @@ def chat(client: anthropic.Anthropic, messages: list, max_turns: int) -> None:
 
         add_user_text(messages, question)
         before = len(messages)
-        if not run_agent_safely(client, messages, max_turns):
+        if not run_agent_safely(client, messages, max_turns, auto_approve):
             # The request failed, so Claude never saw the question. Take it
             # back out of the history so you can just type it again.
             del messages[before:]
@@ -173,6 +215,8 @@ def main() -> None:
                         help="Safety limit on loop turns (per question in chat mode)")
     parser.add_argument("--chat", action="store_true",
                         help="Keep chatting after the evaluation to ask follow-up questions")
+    parser.add_argument("--yes", action="store_true",
+                        help="Auto-approve save_application without asking")
     args = parser.parse_args()
 
     load_dotenv()  # copies values from .env into os.environ
@@ -190,10 +234,10 @@ def main() -> None:
     messages: list = []
     add_user_text(messages, request)
 
-    if not run_agent_safely(client, messages, args.max_turns):
+    if not run_agent_safely(client, messages, args.max_turns, args.yes):
         sys.exit(1)
     if args.chat:
-        chat(client, messages, args.max_turns)
+        chat(client, messages, args.max_turns, args.yes)
 
 
 if __name__ == "__main__":

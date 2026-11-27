@@ -26,6 +26,37 @@ python agent.py https://example.com/jobs/backend-engineer --cv sample_cv.txt
 | `--cv` | Your CV as `.pdf`, `.txt` or `.md` |
 | `--max-turns` | Safety limit on loop iterations (default 10, applied to each question in chat mode) |
 | `--chat` | After the evaluation, stay open for follow-up questions |
+| `--yes` | Skip the approval prompt and save automatically |
+
+### Approving saves (human in the loop)
+
+Before anything is written to `applications.json`, the agent shows you the record and asks:
+
+```
+✋ Claude wants to run save_application:
+   company: Acme Ltd
+   role: Graduate Backend Engineer
+   match_score: 85
+   notes: STRENGTHS: ...
+   Approve? [y = yes / n = no / or type feedback for Claude]
+```
+
+- `y`: save it.
+- `n` (or Enter): don't save. Claude is told you declined.
+- Anything else is **feedback**, e.g. `score is too high, make it 70`. Nothing is saved; Claude reads your feedback, revises, and asks again.
+
+This works because of how tool use is designed: Claude only *requests* a tool, and **your code decides whether to run it.** A "no" goes back as the `tool_result`, just like real output would:
+
+```python
+if block.name in NEEDS_APPROVAL and not auto_approve:
+    approved, feedback = ask_approval(block.name, block.input)
+if approved:
+    result, is_error = run_tool(block.name, block.input)
+else:
+    result = "The user declined this action. Nothing was saved. Their feedback: ..."
+```
+
+Read-only tools (`fetch_job_posting`, `read_cv`) run without asking. Only tools listed in `NEEDS_APPROVAL` in `agent.py` need a yes. Add a tool's name there to gate it too.
 
 ### Chat mode
 
@@ -154,7 +185,6 @@ applications.json created on first save (git-ignored)
 
 ## Ideas for v2
 
-- **Human approval:** ask `y/n` before running `save_application`. If you decline, return "user declined" as the tool result.
 - **New tools:** `list_applications`, `draft_cover_letter(company, role)` writing to a file, `compare_jobs`.
 - **Streaming:** use `client.messages.stream(...)` to print Claude's text as it's generated.
 - **Prompt caching:** add `cache_control` so the repeated system prompt, tools and history are billed at the cheaper cached rate.
