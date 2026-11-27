@@ -9,6 +9,7 @@ Each tool has two halves:
 """
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
 APPLICATIONS_FILE = Path(__file__).parent / "applications.json"
+COVER_LETTERS_DIR = Path(__file__).parent / "cover_letters"
 MAX_POSTING_CHARS = 15_000  # keep the page text small enough to be cheap to send
 
 
@@ -89,6 +91,41 @@ def save_application(company: str, role: str, match_score: int, notes: str) -> s
     return f"Saved application #{len(records)}: {role} at {company} (score {match_score})."
 
 
+def list_applications() -> str:
+    """Return every saved application as JSON, numbered from 1."""
+    if not APPLICATIONS_FILE.exists():
+        return "No applications saved yet."
+    records = json.loads(APPLICATIONS_FILE.read_text(encoding="utf-8"))
+    if not records:
+        return "No applications saved yet."
+    numbered = [{"id": i, **record} for i, record in enumerate(records, start=1)]
+    return json.dumps(numbered, indent=2, ensure_ascii=False)
+
+
+def _slug(text: str) -> str:
+    """'Acme Ltd.' -> 'acme-ltd' (safe to use in a file name)."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "untitled"
+
+
+def draft_cover_letter(company: str, role: str, letter: str) -> str:
+    """Save a cover letter Claude has written to cover_letters/<company>_<role>.md.
+
+    Claude does the writing; this tool just saves the text. Existing files
+    are never overwritten: a second draft becomes ..._2.md, and so on.
+    """
+    if not letter.strip():
+        raise ValueError("The cover letter is empty.")
+    COVER_LETTERS_DIR.mkdir(exist_ok=True)
+    stem = f"{_slug(company)}_{_slug(role)}"
+    path = COVER_LETTERS_DIR / f"{stem}.md"
+    n = 2
+    while path.exists():
+        path = COVER_LETTERS_DIR / f"{stem}_{n}.md"
+        n += 1
+    path.write_text(letter.strip() + "\n", encoding="utf-8")
+    return f"Saved cover letter to {path.relative_to(Path(__file__).parent)} ({len(letter.split())} words)."
+
+
 # ---------------------------------------------------------------------------
 # 2. Tool definitions (what Claude sees)
 # ---------------------------------------------------------------------------
@@ -152,6 +189,43 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "list_applications",
+        "description": (
+            "List every job the candidate has evaluated so far, with company, role, match score, "
+            "notes and date. Use this to answer questions about past applications or compare jobs."
+        ),
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "draft_cover_letter",
+        "description": (
+            "Save a cover letter you have written for a specific job to a Markdown file. "
+            "Write the complete letter yourself, tailored to the posting and grounded only in "
+            "facts from the CV, and pass the full text. Only use this when the candidate asks "
+            "for a cover letter."
+        ),
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "company": {"type": "string", "description": "Company name."},
+                "role": {"type": "string", "description": "Job title."},
+                "letter": {
+                    "type": "string",
+                    "description": "The full cover letter text (Markdown), ready to send.",
+                },
+            },
+            "required": ["company", "role", "letter"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -163,6 +237,8 @@ _FUNCTIONS = {
     "fetch_job_posting": fetch_job_posting,
     "read_cv": read_cv,
     "save_application": save_application,
+    "list_applications": list_applications,
+    "draft_cover_letter": draft_cover_letter,
 }
 
 

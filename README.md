@@ -1,6 +1,18 @@
 # Job Application Agent
 
-A small command-line AI agent that reads a job posting and your CV, judges how well they match, and logs the result to `applications.json`.
+A small command-line AI agent that reads a job posting and your CV, judges how well they match, and logs the result to `applications.json`. In chat mode it can also look back over past evaluations and write cover letters.
+
+## Tools
+
+| Tool | What it does | Needs approval? |
+|---|---|---|
+| `fetch_job_posting(url)` | Downloads a job page and returns its text | no |
+| `read_cv(path)` | Reads your CV (`.pdf`, `.txt`, `.md`) | no |
+| `save_application(company, role, match_score, notes)` | Appends an evaluation to `applications.json` | **yes** |
+| `list_applications()` | Returns every saved evaluation, so Claude can answer "which jobs scored above 70?" | no |
+| `draft_cover_letter(company, role, letter)` | Saves a cover letter **Claude wrote** to `cover_letters/<company>_<role>.md` (never overwrites; extra drafts get `_2`, `_3`) | **yes** |
+
+`draft_cover_letter` shows a pattern worth noticing: **the tool doesn't generate the letter. Claude does.** Claude writes the text and passes it as the `letter` argument, and the tool only saves it. Since saving needs approval, you read the whole letter first and can reply with feedback ("mention my test-coverage result") to get a revised draft.
 
 It uses the [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python) directly. The **agent loop is written by hand** (no agent framework, no SDK Tool Runner), so you can see exactly how an agent works.
 
@@ -56,7 +68,7 @@ else:
     result = "The user declined this action. Nothing was saved. Their feedback: ..."
 ```
 
-Read-only tools (`fetch_job_posting`, `read_cv`) run without asking. Only tools listed in `NEEDS_APPROVAL` in `agent.py` need a yes. Add a tool's name there to gate it too.
+Read-only tools (`fetch_job_posting`, `read_cv`, `list_applications`) run without asking. `save_application` and `draft_cover_letter` write files, so they need a yes. Only tools listed in `NEEDS_APPROVAL` in `agent.py` need a yes. Add a tool's name there to gate it too.
 
 ### Chat mode
 
@@ -64,7 +76,7 @@ Read-only tools (`fetch_job_posting`, `read_cv`) run without asking. Only tools 
 python agent.py https://example.com/jobs/backend-engineer --cv sample_cv.txt --chat
 ```
 
-After the evaluation you get a `you>` prompt. Ask things like *"rewrite my summary for this role"*, *"draft a short cover letter"* or *"what interview questions should I prepare for?"*. Type `exit` or press Ctrl-D to quit.
+After the evaluation you get a `you>` prompt. Ask things like *"rewrite my summary for this role"*, *"draft a cover letter, under 200 words"*, *"which of my saved jobs scored highest?"* or *"what interview questions should I prepare for?"*. Type `exit` or press Ctrl-D to quit.
 
 Chat mode is a second loop **around** the agent loop:
 
@@ -176,6 +188,7 @@ requirements.txt  dependencies
 .env.example      template for your API key (.env itself is git-ignored)
 sample_cv.txt     a fake CV to test with
 applications.json created on first save (git-ignored)
+cover_letters/    saved cover letters (git-ignored)
 ```
 
 ## Limitations
@@ -185,7 +198,7 @@ applications.json created on first save (git-ignored)
 
 ## Ideas for v2
 
-- **New tools:** `list_applications`, `draft_cover_letter(company, role)` writing to a file, `compare_jobs`.
+- **More tools:** `update_application(id, ...)` to change a saved record, `export_cover_letter_pdf`, or a `search_jobs` tool backed by a jobs API.
 - **Streaming:** use `client.messages.stream(...)` to print Claude's text as it's generated.
 - **Prompt caching:** add `cache_control` so the repeated system prompt, tools and history are billed at the cheaper cached rate.
 - **Refusal fallback:** the API has a beta `fallbacks` parameter that retries a refused request on another model automatically.

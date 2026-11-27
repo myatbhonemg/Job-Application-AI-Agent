@@ -8,3 +8,4 @@ __pycache__/
 
 # Agent output (personal data about your applications)
 applications.json
+cover_letters/

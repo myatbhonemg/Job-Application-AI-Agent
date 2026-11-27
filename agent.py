@@ -34,15 +34,18 @@ The candidate may then ask follow-up questions (e.g. rewrite a CV section, draft
 prepare for interviews). Answer them using what you already know; only call tools again if you
 need new information or are asked to evaluate a different job.
 
-save_application needs the candidate's approval. If they decline with feedback, revise the
-record accordingly and call save_application again. If they decline without feedback, do not
+save_application and draft_cover_letter need the candidate's approval. If they decline with
+feedback, revise accordingly and call the tool again. If they decline without feedback, do not
 retry; just carry on.
+
+Only draft a cover letter when the candidate asks for one. Base it on real facts from the CV and
+never invent experience. Use list_applications when asked about previously evaluated jobs.
 
 If a tool fails, say what went wrong and continue with what you have if that makes sense."""
 
 # Tools that change something (here: write to applications.json) need a human
 # to say yes first. Read-only tools run straight away.
-NEEDS_APPROVAL = {"save_application"}
+NEEDS_APPROVAL = {"save_application", "draft_cover_letter"}
 
 
 def preview(text: str, limit: int = 200) -> str:
@@ -55,7 +58,13 @@ def ask_approval(name: str, tool_input: dict) -> tuple[bool, str]:
     """Show what Claude wants to do and ask the human. Returns (approved, feedback)."""
     print(f"\n✋ Claude wants to run {name}:")
     for key, value in tool_input.items():
-        print(f"   {key}: {value}")
+        text = str(value)
+        if "\n" in text:  # long multi-line values (e.g. a cover letter): show as a block
+            print(f"   {key}:")
+            for line in text.splitlines():
+                print(f"      {line}")
+        else:
+            print(f"   {key}: {text}")
     try:
         answer = input("   Approve? [y = yes / n = no / or type feedback for Claude] ").strip()
     except (EOFError, KeyboardInterrupt):
